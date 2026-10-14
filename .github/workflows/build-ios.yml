@@ -4,48 +4,48 @@ on:
   workflow_dispatch:
   push:
     branches:
-      
-main
+      - main
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-latest
 
     steps:
-      
-name: Checkout source
-      uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      
-name: Install XcodeGen
-      run: brew install xcodegen
+      - name: Install Xcodegen
+        run: brew install xcodegen
 
-      
-name: Generate Xcode project
-      run: xcodegen generate
+      - name: Generate Xcode project
+        run: xcodegen generate
 
-      
-name: Build unsigned iOS app
-      run: |
-        xcodebuild \-project RepostGrid.xcodeproj \-scheme RepostGrid \-configuration Release \-sdk iphoneos \-destination 'generic/platform=iOS' \-derivedDataPath build/DerivedData \
-          CODE_SIGNING_ALLOWED=NO \
-          build
+      - name: Build unsigned iOS app
+        run: |
+          xcodebuild -project ReportGrid.xcodeproj \
+            -scheme ReportGrid \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
 
-      
-name: Package IPA
-      run: |
-        set -euo pipefail
-        APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/RepostGrid.app"
-        test -d "$APP_PATH"
-        mkdir -p build/ipa/Payload
-        cp -R "$APP_PATH" build/ipa/Payload/RepostGrid.app
-        cd build/ipa/usr/bin/zip -qry RepostGrid-unsigned.ipa Payload
+      - name: Package IPA
+        run: |
+          set -eo pipefail
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/ReportGrid.app"
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/ReportGrid.app
+          cd build/ipa
+          zip -qry ReportGrid-unsigned.ipa Payload
 
-      
-name: Upload IPA artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: RepostGrid-unsigned-IPA
-        path: build/ipa/RepostGrid-unsigned.ipa
-        if-no-files-found: error
-        retention-days: 7
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReportGrid-unsigned-IPA
+          path: build/ipa/ReportGrid-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
