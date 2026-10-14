@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-14
 
     steps:
       - name: Checkout source
@@ -22,13 +22,24 @@ jobs:
           xcodegen generate
           echo "--- Список файлов в корне ---"
           ls -la
-          echo "--- Поиск файлов .xcodeproj ---"
-          find . -name "*.xcodeproj"
 
       - name: Build unsigned iOS app
         run: |
-          xcodebuild -project ReportGrid.xcodeproj \
-            -scheme ReportGrid \
+          # Ищем файл проекта
+          PROJECT_FILE=$(find $GITHUB_WORKSPACE -maxdepth 1 -name "*.xcodeproj" | head -n 1)
+          
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "❌ ОШИБКА: Не найдено ни одного .xcodeproj файла!"
+            exit 1
+          fi
+          
+          PROJECT_NAME=$(basename "$PROJECT_FILE" .xcodeproj)
+          echo "✅ Найден проект: $PROJECT_NAME"
+          echo "📍 Полный путь: $PROJECT_FILE"
+          
+          # Собираем приложение
+          xcodebuild -project "$PROJECT_FILE" \
+            -scheme "$PROJECT_NAME" \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -41,9 +52,21 @@ jobs:
       - name: Package IPA
         run: |
           set -eo pipefail
-          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/ReportGrid.app"
+          
+          # Ищем собранный .app файл
+          APP_PATH=$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ ОШИБКА: Собранный .app файл не найден!"
+            exit 1
+          fi
+          
+          APP_NAME=$(basename "$APP_PATH")
+          echo "✅ Найден .app файл: $APP_NAME"
+          
+          # Упаковываем в IPA
           mkdir -p build/ipa/Payload
-          cp -R "$APP_PATH" build/ipa/Payload/ReportGrid.app
+          cp -R "$APP_PATH" "build/ipa/Payload/$APP_NAME"
           cd build/ipa
           zip -qry ReportGrid-unsigned.ipa Payload
 
