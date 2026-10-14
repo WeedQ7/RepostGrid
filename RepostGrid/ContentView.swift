@@ -367,6 +367,7 @@ struct TikTokWebView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.allowsBackForwardNavigationGestures = true
+        view.navigationDelegate = context.coordinator
         view.load(URLRequest(url: URL(string: "https://www.tiktok.com/")!))
         return view
     }
@@ -479,7 +480,7 @@ struct TikTokWebView: UIViewRepresentable {
         }
     }
 
-    final class Coordinator {
+    final class Coordinator: NSObject, WKNavigationDelegate {
         var lastScanTrigger = 0
         var lastLoginTrigger = 0
         var lastProfileTrigger = 0
@@ -487,6 +488,35 @@ struct TikTokWebView: UIViewRepresentable {
 
         init(onScan: @escaping ([RepostItem], String) -> Void) {
             self.onScan = onScan
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            guard let url = navigationAction.request.url,
+                  let scheme = url.scheme?.lowercased() else {
+                decisionHandler(.cancel)
+                return
+            }
+
+            // Keep web-based TikTok login and navigation inside Repost Grid.
+            if scheme == "https" || scheme == "http" {
+                if navigationAction.targetFrame == nil {
+                    webView.load(navigationAction.request)
+                    decisionHandler(.cancel)
+                } else {
+                    decisionHandler(.allow)
+                }
+                return
+            }
+
+            // Do not launch TikTok/Safari or another app from a login deep link.
+            decisionHandler(.cancel)
+            DispatchQueue.main.async {
+                self.onScan([], "Переход в другое приложение заблокирован, чтобы Repost Grid не сворачивался. На странице входа выберите вход по телефону, почте или доступным способом внутри TikTok — не нажимайте «Use TikTok app».")
+            }
         }
     }
 }
