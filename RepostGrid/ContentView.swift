@@ -16,22 +16,18 @@ struct RepostItem: Identifiable, Codable, Equatable {
 
 @MainActor
 final class RepostStore: ObservableObject {
-    @Published var items: [RepostItem] = [
-        .init(author: "@example_creator", caption: "Пример репоста — замените после подключения источника данных", videoURL: "https://www.tiktok.com/"),
-        .init(author: "@video_author", caption: "Демо-карточка. Это не реальный репост", videoURL: "https://www.tiktok.com/"),
-        .init(author: "@creator_three", caption: "Здесь будут отображаться найденные репосты", videoURL: "https://www.tiktok.com/")
-    ]
+    @Published var items: [RepostItem] = []
     @Published var showTikTok = false
     @Published var selectedItem: RepostItem?
     @Published var showConfirmRemoved = false
     @Published var notice: String?
 
-    private let storageKey = "repostgrid.items.v1"
+    private let storageKey = "repostgrid.items.v2"
 
     init() {
         if let data = UserDefaults.standard.data(forKey: storageKey),
            let saved = try? JSONDecoder().decode([RepostItem].self, from: data),
-           !saved.isEmpty {
+        {
             items = saved
         }
     }
@@ -44,18 +40,25 @@ final class RepostStore: ObservableObject {
         showTikTok = true
     }
 
+    func replaceWithScannedItems(_ scanned: [RepostItem]) {
+        var seen = Set<String>()
+        items = scanned.filter { seen.insert($0.videoURL).inserted }
+        persist()
+        if items.isEmpty {
+            notice = "На этой странице не удалось найти ссылки на видео. Убедитесь, что открыта вкладка репостов вашего профиля, прокрутите страницу и попробуйте снова."
+        } else {
+            notice = "Найдено видео: \\(items.count). Проверьте карточки: TikTok может показывать не все репосты сразу."
+        }
+    }
+
     func confirmRemoved(_ item: RepostItem) {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         items[index].status = .removed
         persist()
     }
 
-    func resetDemo() {
-        items = [
-            .init(author: "@example_creator", caption: "Демо-карточка — не реальный репост", videoURL: "https://www.tiktok.com/"),
-            .init(author: "@video_author", caption: "Демо-карточка — не реальный репост", videoURL: "https://www.tiktok.com/"),
-            .init(author: "@creator_three", caption: "Демо-карточка — не реальный репост", videoURL: "https://www.tiktok.com/")
-        ]
+    func clearItems() {
+        items = []
         persist()
     }
 
@@ -106,7 +109,7 @@ struct ContentView: View {
                         EmptyStateView()
                     }
 
-                    Text("Карточки сейчас демонстрационные. Приложение не получает реальные репосты и не удаляет их автоматически: у TikTok нет публичного API для этой операции.")
+                    Text("Сканирование читает ссылки, доступные на открытой странице TikTok. Если видео не появились, откройте вкладку репостов профиля и попробуйте снова. Снятие репоста пока выполняется вручную в TikTok.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
@@ -144,9 +147,9 @@ struct ContentView: View {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
                         Button {
-                            store.resetDemo()
+                            store.clearItems()
                         } label: {
-                            Label("Сбросить демо-данные", systemImage: "arrow.counterclockwise")
+                            Label("Очистить список", systemImage: "trash")
                         }
                         Button {
                             showInfo = true
@@ -298,43 +301,134 @@ struct RepostCard: View {
 }
 
 struct TikTokWebSheet: View {
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\\.dismiss) private var dismiss
+    @State private var scanTrigger = 0
+    @State private var pageMessage = "Войдите в TikTok, откройте свой профиль и вкладку репостов, затем нажмите «Сканировать»."
+    let onScan: ([RepostItem]) -> Void
 
     var body: some View {
         NavigationStack {
-            TikTokWebView(url: URL(string: "https://www.tiktok.com/")!)
-                .ignoresSafeArea(edges: .bottom)
-                .navigationTitle("TikTok")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItemGroup(placement: .navigationBarLeading) {
-                        Button("Закрыть") { dismiss() }
-                    }
-                    ToolbarItemGroup(placement: .navigationBarTrailing) {
-                        Button {
-                            UIApplication.shared.open(URL(string: "https://www.tiktok.com/")!)
-                        } label: {
-                            Image(systemName: "safari")
-                        }
-                        .accessibilityLabel("Открыть в Safari")
+            VStack(spacing: 0) {
+                Text(pageMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                TikTokWebView(scanTrigger: $scanTrigger) { scanned, message in
+                    pageMessage = message
+                    if !scanned.isEmpty {
+                        onScan(scanned)
                     }
                 }
+            }
+            .ignoresSafeArea(edges: .bottom)
+            .navigationTitle("TikTok")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Закрыть") { dismiss() }
+                }
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    Button {
+                        scanTrigger += 1
+                    } label: {
+                        Label("Сканировать", systemImage: "viewfinder")
+                    }
+                    Button {
+                        UIApplication.shared.open(URL(string: "https://www.tiktok.com/")!)
+                    } label: {
+                        Image(systemName: "safari")
+                    }
+                    .accessibilityLabel("Открыть в Safari")
+                }
+            }
         }
     }
 }
 
 struct TikTokWebView: UIViewRepresentable {
-    let url: URL
+    @Binding var scanTrigger: Int
+    let onScan: ([RepostItem], String) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onScan: onScan)
+    }
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.allowsBackForwardNavigationGestures = true
-        view.load(URLRequest(url: url))
+        view.load(URLRequest(url: URL(string: "https://www.tiktok.com/")!))
         return view
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        guard scanTrigger != context.coordinator.lastScanTrigger else { return }
+        context.coordinator.lastScanTrigger = scanTrigger
+
+        let script = """
+        (() => {
+          const links = Array.from(document.querySelectorAll('a[href*="/video/"]'));
+          const seen = new Set();
+          const results = [];
+          for (const link of links) {
+            let href = link.href || '';
+            if (!href || !href.includes('/video/')) continue;
+            try {
+              const u = new URL(href);
+              href = u.origin + u.pathname;
+            } catch (_) {}
+            if (seen.has(href)) continue;
+            seen.add(href);
+            let card = link;
+            for (let i = 0; i < 5 && card.parentElement; i++) {
+              if ((card.innerText || '').trim().length > 20) card = card.parentElement;
+            }
+            const text = (card.innerText || link.innerText || link.getAttribute('aria-label') || '').trim();
+            const authorLink = card.querySelector('a[href*="/@"]');
+            const author = authorLink ? (authorLink.innerText || authorLink.getAttribute('href') || '').trim() : '';
+            results.push({
+              url: href,
+              author: author.startsWith('@') ? author : (author.match(/@[^/\\s]+/) || ['Автор TikTok'])[0],
+              caption: text.replace(/\\s+/g, ' ').slice(0, 220) || 'Видео из открытой страницы TikTok'
+            });
+          }
+          return results;
+        })()
+        """
+
+        uiView.evaluateJavaScript(script) { result, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.onScan([], "Не удалось прочитать страницу TikTok: \\(error.localizedDescription)")
+                    return
+                }
+                let rows = result as? [[String: Any]] ?? []
+                let items = rows.compactMap { row -> RepostItem? in
+                    guard let url = row["url"] as? String,
+                          url.contains("/video/") else { return nil }
+                    return RepostItem(
+                        author: row["author"] as? String ?? "Автор TikTok",
+                        caption: row["caption"] as? String ?? "Видео из TikTok",
+                        videoURL: url
+                    )
+                }
+                let message = items.isEmpty
+                    ? "Не найдено ссылок на видео. Откройте вкладку репостов профиля, прокрутите её, чтобы загрузить карточки, и нажмите «Сканировать» ещё раз."
+                    : "Сканирование завершено: найдено видео — \\(items.count)."
+                self.onScan(items, message)
+            }
+        }
+    }
+
+    final class Coordinator {
+        var lastScanTrigger = 0
+        let onScan: ([RepostItem], String) -> Void
+
+        init(onScan: @escaping ([RepostItem], String) -> Void) {
+            self.onScan = onScan
+        }
+    }
 }
 
 struct InfoView: View {
@@ -347,7 +441,7 @@ struct InfoView: View {
                     Label("Открытие TikTok внутри приложения", systemImage: "safari")
                 }
                 Section("Ограничения") {
-                    Text("Данные в сетке демонстрационные. Вход в WKWebView может быть отдельным от приложения TikTok. Удаление нужно выполнить в TikTok вручную и подтвердить в Repost Grid.")
+                    Text("Сканирование пытается собрать ссылки на видео из текущей страницы TikTok и может пропустить часть карточек. Вход внутри приложения может быть отдельным от приложения TikTok. Снятие репоста пока нужно выполнить вручную.")
                     Text("Не вводите пароль TikTok в сторонние формы. Авторизуйтесь только на официальном домене tiktok.com.")
                 }
             }
