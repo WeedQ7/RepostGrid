@@ -304,7 +304,9 @@ struct RepostCard: View {
 struct TikTokWebSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var scanTrigger = 0
-    @State private var pageMessage = "Войдите в TikTok, откройте свой профиль и вкладку репостов, затем нажмите «Сканировать»."
+    @State private var loginTrigger = 0
+    @State private var profileTrigger = 0
+    @State private var pageMessage = "Нажмите «Войти», затем откройте свой профиль и вкладку репостов. Сканирование работает только на вкладке репостов."
     let onScan: ([RepostItem]) -> Void
 
     var body: some View {
@@ -315,7 +317,7 @@ struct TikTokWebSheet: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                TikTokWebView(scanTrigger: $scanTrigger) { scanned, message in
+                TikTokWebView(scanTrigger: $scanTrigger, loginTrigger: $loginTrigger, profileTrigger: $profileTrigger) { scanned, message in
                     pageMessage = message
                     if !scanned.isEmpty {
                         onScan(scanned)
@@ -331,16 +333,20 @@ struct TikTokWebSheet: View {
                 }
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Button {
+                        loginTrigger += 1
+                    } label: {
+                        Label("Войти", systemImage: "person.crop.circle")
+                    }
+                    Button {
+                        profileTrigger += 1
+                    } label: {
+                        Label("Профиль", systemImage: "person")
+                    }
+                    Button {
                         scanTrigger += 1
                     } label: {
                         Label("Сканировать", systemImage: "viewfinder")
                     }
-                    Button {
-                        UIApplication.shared.open(URL(string: "https://www.tiktok.com/")!)
-                    } label: {
-                        Image(systemName: "safari")
-                    }
-                    .accessibilityLabel("Открыть в Safari")
                 }
             }
         }
@@ -349,6 +355,8 @@ struct TikTokWebSheet: View {
 
 struct TikTokWebView: UIViewRepresentable {
     @Binding var scanTrigger: Int
+    @Binding var loginTrigger: Int
+    @Binding var profileTrigger: Int
     let onScan: ([RepostItem], String) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -364,11 +372,55 @@ struct TikTokWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
+        if loginTrigger != context.coordinator.lastLoginTrigger {
+            context.coordinator.lastLoginTrigger = loginTrigger
+            uiView.load(URLRequest(url: URL(string: "https://www.tiktok.com/login")!))
+            return
+        }
+        if profileTrigger != context.coordinator.lastProfileTrigger {
+            context.coordinator.lastProfileTrigger = profileTrigger
+            uiView.evaluateJavaScript("""
+              (() => {
+                const candidates = Array.from(document.querySelectorAll('a,button,[role="button"]'));
+                const profile = candidates.find(el => {
+                  const label = ((el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
+                  const href = el.getAttribute('href') || '';
+                  return /profile/i.test(label) || /^\/@[^/]+\/?$/.test(href);
+                });
+                if (profile) { profile.click(); return 'profile-clicked'; }
+                return 'profile-not-found';
+              })()
+            """) { result, error in
+                DispatchQueue.main.async {
+                    if error != nil || (result as? String) == "profile-not-found" {
+                        self.onScan([], "Не удалось автоматически открыть профиль. Войдите в TikTok и нажмите на значок профиля вручную, затем откройте вкладку «Репосты».")
+                    } else {
+                        self.onScan([], "Открыл профиль. Теперь вручную выберите вкладку «Репосты» и нажмите «Сканировать».")
+                    }
+                }
+            }
+            return
+        }
         guard scanTrigger != context.coordinator.lastScanTrigger else { return }
         context.coordinator.lastScanTrigger = scanTrigger
 
         let script = """
         (() => {
+          const path = window.location.pathname || '';
+          if (!/^\/@[^/]+/.test(path)) {
+            return { ok: false, message: 'Сначала войдите в TikTok и откройте страницу своего профиля, затем вкладку «Репосты».', rows: [] };
+          }
+          const tabNodes = Array.from(document.querySelectorAll('[role="tab"], a, button, [role="button"]'));
+          const repostTab = tabNodes.find(el => /^(reposts|репосты)$/i.test((el.innerText || el.getAttribute('aria-label') || '').trim()));
+          const selected = repostTab && (
+            repostTab.getAttribute('aria-selected') === 'true' ||
+            repostTab.getAttribute('aria-current') === 'page' ||
+            /active|selected/i.test(repostTab.className || '') ||
+            repostTab.closest('[role="tablist"]') && repostTab.getAttribute('data-active') === 'true'
+          );
+          if (!selected) {
+            return { ok: false, message: 'Профиль открыт, но активная вкладка «Репосты» не распознана. Нажмите именно вкладку репостов и попробуйте снова.', rows: [] };
+          }
           const links = Array.from(document.querySelectorAll('a[href*="/video/"]'));
           const seen = new Set();
           const results = [];
@@ -394,7 +446,7 @@ struct TikTokWebView: UIViewRepresentable {
               caption: text.replace(/\\s+/g, ' ').slice(0, 220) || 'Видео из открытой страницы TikTok'
             });
           }
-          return results;
+          return { ok: true, message: 'Репосты просканированы.', rows: results };
         })()
         """
 
@@ -404,7 +456,12 @@ struct TikTokWebView: UIViewRepresentable {
                     self.onScan([], "Не удалось прочитать страницу TikTok: \\(error.localizedDescription)")
                     return
                 }
-                let rows = result as? [[String: Any]] ?? []
+                let payload = result as? [String: Any] ?? [:]
+                let rows = payload["rows"] as? [[String: Any]] ?? []
+                if (payload["ok"] as? Bool) != true {
+                    self.onScan([], payload["message"] as? String ?? "Не удалось определить вкладку репостов.")
+                    return
+                }
                 let items = rows.compactMap { row -> RepostItem? in
                     guard let url = row["url"] as? String,
                           url.contains("/video/") else { return nil }
@@ -415,8 +472,8 @@ struct TikTokWebView: UIViewRepresentable {
                     )
                 }
                 let message = items.isEmpty
-                    ? "Не найдено ссылок на видео. Откройте вкладку репостов профиля, прокрутите её, чтобы загрузить карточки, и нажмите «Сканировать» ещё раз."
-                    : "Сканирование завершено: найдено видео — \\(items.count)."
+                    ? "На вкладке репостов не найдены ссылки на видео. Прокрутите страницу, чтобы загрузить карточки, и нажмите «Сканировать» ещё раз."
+                    : "Сканирование вкладки репостов завершено: найдено видео — \\(items.count)."
                 self.onScan(items, message)
             }
         }
@@ -424,6 +481,8 @@ struct TikTokWebView: UIViewRepresentable {
 
     final class Coordinator {
         var lastScanTrigger = 0
+        var lastLoginTrigger = 0
+        var lastProfileTrigger = 0
         let onScan: ([RepostItem], String) -> Void
 
         init(onScan: @escaping ([RepostItem], String) -> Void) {
