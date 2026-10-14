@@ -103,8 +103,7 @@ struct ContentView: View {
                     }
 
                     if store.items.isEmpty {
-                        ContentUnavailableView("Пока пусто", systemImage: "square.grid.2x2",
-                                               description: Text("Откройте TikTok и проверьте свои репосты."))
+                        EmptyStateView()
                     }
 
                     Text("Карточки сейчас демонстрационные. Приложение не получает реальные репосты и не удаляет их автоматически: у TikTok нет публичного API для этой операции.")
@@ -142,13 +141,17 @@ struct ContentView: View {
                 Text(store.notice ?? "")
             }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
-                        Button("Сбросить демо-данные", systemImage: "arrow.counterclockwise") {
+                        Button {
                             store.resetDemo()
+                        } label: {
+                            Label("Сбросить демо-данные", systemImage: "arrow.counterclockwise")
                         }
-                        Button("О приложении", systemImage: "info.circle") {
+                        Button {
                             showInfo = true
+                        } label: {
+                            Label("О приложении", systemImage: "info.circle")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -208,6 +211,24 @@ struct StatCard: View {
         .padding(14)
         .background(Color.white.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+struct EmptyStateView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "square.grid.2x2")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("Пока пусто")
+                .font(.headline)
+            Text("Откройте TikTok и проверьте свои репосты.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
     }
 }
 
@@ -286,10 +307,10 @@ struct TikTokWebSheet: View {
                 .navigationTitle("TikTok")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItemGroup(placement: .navigationBarLeading) {
                         Button("Закрыть") { dismiss() }
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItemGroup(placement: .navigationBarTrailing) {
                         Button {
                             UIApplication.shared.open(URL(string: "https://www.tiktok.com/")!)
                         } label: {
