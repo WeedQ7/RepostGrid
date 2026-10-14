@@ -385,7 +385,7 @@ struct TikTokWebView: UIViewRepresentable {
                 const profile = candidates.find(el => {
                   const label = ((el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
                   const href = el.getAttribute('href') || '';
-                  return /profile/i.test(label) || /^\/@[^/]+\/?$/.test(href);
+                  return /profile/i.test(label) || (href.startsWith('/@') && href.split('/').filter(Boolean).length === 1);
                 });
                 if (profile) { profile.click(); return 'profile-clicked'; }
                 return 'profile-not-found';
@@ -407,7 +407,7 @@ struct TikTokWebView: UIViewRepresentable {
         let script = """
         (() => {
           const path = window.location.pathname || '';
-          if (!/^\/@[^/]+/.test(path)) {
+          if (!path.startsWith('/@')) {
             return { ok: false, message: 'Сначала войдите в TikTok и откройте страницу своего профиля, затем вкладку «Репосты».', rows: [] };
           }
           const tabNodes = Array.from(document.querySelectorAll('[role="tab"], a, button, [role="button"]'));
