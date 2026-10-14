@@ -108,7 +108,7 @@ struct ContentView: View {
                         EmptyStateView()
                     }
 
-                    Text("Сканирование читает ссылки, доступные на открытой странице TikTok. Если видео не появились, откройте вкладку репостов профиля и попробуйте снова. Снятие репоста пока выполняется вручную в TikTok.")
+                    Text("Сканирование запрашивает список репостов через внутренний endpoint TikTok в авторизованной веб-сессии. Endpoint неофициальный и может перестать работать; снятие репоста пока выполняется вручную.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
@@ -306,7 +306,7 @@ struct TikTokWebSheet: View {
     @State private var scanTrigger = 0
     @State private var loginTrigger = 0
     @State private var profileTrigger = 0
-    @State private var pageMessage = "Нажмите «Войти», затем откройте свой профиль и вкладку репостов. Сканирование работает только на вкладке репостов."
+    @State private var pageMessage = "Войдите в TikTok и откройте свой профиль. Сканирование запрашивает список репостов напрямую, без видимой вкладки репостов."
     let onScan: ([RepostItem]) -> Void
 
     var body: some View {
@@ -406,48 +406,72 @@ struct TikTokWebView: UIViewRepresentable {
         context.coordinator.lastScanTrigger = scanTrigger
 
         let script = """
-        (() => {
-          const path = window.location.pathname || '';
-          if (!path.startsWith('/@')) {
-            return { ok: false, message: 'Сначала войдите в TikTok и откройте страницу своего профиля, затем вкладку «Репосты».', rows: [] };
-          }
-          const tabNodes = Array.from(document.querySelectorAll('[role="tab"], a, button, [role="button"]'));
-          const repostTab = tabNodes.find(el => /^(reposts|репосты)$/i.test((el.innerText || el.getAttribute('aria-label') || '').trim()));
-          const selected = repostTab && (
-            repostTab.getAttribute('aria-selected') === 'true' ||
-            repostTab.getAttribute('aria-current') === 'page' ||
-            /active|selected/i.test(repostTab.className || '') ||
-            repostTab.closest('[role="tablist"]') && repostTab.getAttribute('data-active') === 'true'
-          );
-          if (!selected) {
-            return { ok: false, message: 'Профиль открыт, но активная вкладка «Репосты» не распознана. Нажмите именно вкладку репостов и попробуйте снова.', rows: [] };
-          }
-          const links = Array.from(document.querySelectorAll('a[href*="/video/"]'));
-          const seen = new Set();
-          const results = [];
-          for (const link of links) {
-            let href = link.href || '';
-            if (!href || !href.includes('/video/')) continue;
-            try {
-              const u = new URL(href);
-              href = u.origin + u.pathname;
-            } catch (_) {}
-            if (seen.has(href)) continue;
-            seen.add(href);
-            let card = link;
-            for (let i = 0; i < 5 && card.parentElement; i++) {
-              if ((card.innerText || '').trim().length > 20) card = card.parentElement;
+        (async () => {
+          const fail = message => ({ ok: false, message, rows: [] });
+          try {
+            const path = window.location.pathname || '';
+            const universal = window.__\$UNIVERSAL_DATA\$__;
+            const scope = universal && universal.__DEFAULT_SCOPE__;
+            const secUid = scope && scope['webapp.app-context'] && scope['webapp.app-context'].user && scope['webapp.app-context'].user.secUid;
+            if (!path.startsWith('/@') || !secUid) {
+              return fail('Сначала войдите в TikTok и откройте свой профиль. Не нужно открывать вкладку «Репосты»: список запрашивается напрямую у TikTok.');
             }
-            const text = (card.innerText || link.innerText || link.getAttribute('aria-label') || '').trim();
-            const authorLink = card.querySelector('a[href*="/@"]');
-            const author = authorLink ? (authorLink.innerText || authorLink.getAttribute('href') || '').trim() : '';
-            results.push({
-              url: href,
-              author: author.startsWith('@') ? author : (author.match(/@[^/\\s]+/) || ['Автор TikTok'])[0],
-              caption: text.replace(/\\s+/g, ' ').slice(0, 220) || 'Видео из открытой страницы TikTok'
-            });
+            const rows = [];
+            const seen = new Set();
+            let cursor = '0';
+            let hasMore = true;
+            let pages = 0;
+            while (hasMore && pages < 20) {
+              const params = new URLSearchParams({
+                aid: '1988',
+                count: '30',
+                coverFormat: '2',
+                cursor,
+                needPinnedItemIds: 'true',
+                post_item_list_request_type: '0',
+                secUid
+              });
+              const response = await fetch('/api/repost/item_list/?' + params.toString(), {
+                credentials: 'include',
+                headers: { 'accept': 'application/json, text/plain, */*' }
+              });
+              if (response.status === 401 || response.status === 403 || response.status === 429) {
+                return fail('TikTok отклонил запрос (' + response.status + '). Сканирование остановлено; проверьте вход и попробуйте позже.');
+              }
+              if (!response.ok) return fail('TikTok вернул ошибку HTTP ' + response.status + '.');
+              const data = await response.json();
+              if (data.status_code !== undefined && data.status_code !== 0) {
+                return fail((data.status_msg || 'TikTok не разрешил получить список репостов.') + ' Код: ' + data.status_code);
+              }
+              const list = Array.isArray(data.itemList) ? data.itemList : [];
+              for (const item of list) {
+                const id = item && item.id ? String(item.id) : '';
+                const author = item && item.author && item.author.uniqueId ? String(item.author.uniqueId) : '';
+                if (!id || !author || seen.has(id)) continue;
+                seen.add(id);
+                rows.push({
+                  url: 'https://www.tiktok.com/@' + author + '/video/' + id,
+                  author: '@' + author,
+                  caption: String(item.desc || 'Видео из репостов TikTok').replace(/\\s+/g, ' ').slice(0, 220),
+                  thumbnail: (item.video && (item.video.cover || item.video.originCover)) || ''
+                });
+              }
+              pages++;
+              hasMore = Boolean(data.hasMore);
+              const next = data.cursor == null ? cursor : String(data.cursor);
+              if (!hasMore || next === cursor) break;
+              cursor = next;
+              if (hasMore) await new Promise(resolve => setTimeout(resolve, 1800));
+            }
+            return {
+              ok: true,
+              message: 'Получено ' + rows.length + ' репостов через запрос списка TikTok (' + pages + ' страниц).' +
+                (hasMore ? ' Достигнут лимит одного сканирования; нажмите ещё раз позже, если список большой.' : ''),
+              rows
+            };
+          } catch (error) {
+            return fail('Не удалось запросить список репостов TikTok: ' + String(error && error.message || error));
           }
-          return { ok: true, message: 'Репосты просканированы.', rows: results };
         })()
         """
 
