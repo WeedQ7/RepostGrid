@@ -376,6 +376,10 @@ struct TikTokWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
+        let contentController = WKUserContentController()
+        contentController.add(context.coordinator, name: "repostGridScanResult")
+        contentController.add(context.coordinator, name: "repostGridRemoveResult")
+        configuration.userContentController = contentController
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.allowsBackForwardNavigationGestures = true
         view.navigationDelegate = context.coordinator
@@ -496,38 +500,24 @@ struct TikTokWebView: UIViewRepresentable {
             return fail('Не удалось запросить список репостов TikTok: ' + String(error && error.message || error));
           }
         })()
+        .then(result => window.webkit.messageHandlers.repostGridScanResult.postMessage(result))
+        .catch(error => window.webkit.messageHandlers.repostGridScanResult.postMessage({
+          ok: false,
+          message: 'Ошибка JavaScript при поиске: ' + String(error && error.message || error),
+          rows: []
+        }))
         """
 
-        uiView.evaluateJavaScript(script) { result, error in
-            DispatchQueue.main.async {
-                if let error = error {
-                    self.onScan([], "Не удалось прочитать страницу TikTok: \\(error.localizedDescription)")
-                    return
+        uiView.evaluateJavaScript(script) { _, error in
+            if let error {
+                DispatchQueue.main.async {
+                    self.onScan([], "Не удалось запустить поиск TikTok: \\(error.localizedDescription)")
                 }
-                let payload = result as? [String: Any] ?? [:]
-                let rows = payload["rows"] as? [[String: Any]] ?? []
-                if (payload["ok"] as? Bool) != true {
-                    self.onScan([], payload["message"] as? String ?? "Не удалось определить вкладку репостов.")
-                    return
-                }
-                let items = rows.compactMap { row -> RepostItem? in
-                    guard let url = row["url"] as? String,
-                          url.contains("/video/") else { return nil }
-                    return RepostItem(
-                        author: row["author"] as? String ?? "Автор TikTok",
-                        caption: row["caption"] as? String ?? "Видео из TikTok",
-                        videoURL: url
-                    )
-                }
-                let message = items.isEmpty
-                    ? "TikTok вернул пустой список репостов. Проверьте вход и повторите поиск."
-                    : "Сканирование вкладки репостов завершено: найдено видео — \\(items.count)."
-                self.onScan(items, message)
             }
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var lastScanTrigger = 0
         var lastLoginTrigger = 0
         var lastProfileTrigger = 0
@@ -617,13 +607,41 @@ struct TikTokWebView: UIViewRepresentable {
               }
             })()
             """;
-            webView.evaluateJavaScript(script) { result, error in
-                DispatchQueue.main.async {
-                    if let error {
-                        self.onRemove(false, "Не удалось проверить результат: \\(error.localizedDescription)")
+            let bridgedScript = script + """
+            .then(result => window.webkit.messageHandlers.repostGridRemoveResult.postMessage(result))
+            .catch(error => window.webkit.messageHandlers.repostGridRemoveResult.postMessage({
+              ok: false,
+              message: 'Ошибка JavaScript при снятии репоста: ' + String(error && error.message || error)
+            }))
+            """
+            webView.evaluateJavaScript(bridgedScript) { _, error in
+                if let error {
+                    DispatchQueue.main.async {
+                        self.onRemove(false, "Не удалось запустить запрос снятия репоста: \\(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard let payload = message.body as? [String: Any] else { return }
+            DispatchQueue.main.async {
+                if message.name == "repostGridScanResult" {
+                    let rows = payload["rows"] as? [[String: Any]] ?? []
+                    guard (payload["ok"] as? Bool) == true else {
+                        self.onScan([], payload["message"] as? String ?? "TikTok не вернул список репостов.")
                         return
                     }
-                    let payload = result as? [String: Any] ?? [:]
+                    let items = rows.compactMap { row -> RepostItem? in
+                        guard let url = row["url"] as? String, url.contains("/video/") else { return nil }
+                        return RepostItem(
+                            author: row["author"] as? String ?? "Автор TikTok",
+                            caption: row["caption"] as? String ?? "Видео из TikTok",
+                            videoURL: url
+                        )
+                    }
+                    self.onScan(items, payload["message"] as? String ?? "Получено репостов: \\(items.count).")
+                } else if message.name == "repostGridRemoveResult" {
                     self.onRemove((payload["ok"] as? Bool) == true,
                                   payload["message"] as? String ?? "TikTok не вернул подтверждение.")
                 }
