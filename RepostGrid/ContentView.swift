@@ -410,7 +410,7 @@ struct TikTokWebView: UIViewRepresentable {
           const fail = message => ({ ok: false, message, rows: [] });
           try {
             const path = window.location.pathname || '';
-            const universal = window.__\$UNIVERSAL_DATA\$__;
+            const universal = window.__$UNIVERSAL_DATA$__;
             const scope = universal && universal.__DEFAULT_SCOPE__;
             const secUid = scope && scope['webapp.app-context'] && scope['webapp.app-context'].user && scope['webapp.app-context'].user.secUid;
             if (!path.startsWith('/@') || !secUid) {
