@@ -19,7 +19,7 @@ final class RepostStore: ObservableObject {
     @Published var items: [RepostItem] = []
     @Published var showTikTok = false
     @Published var selectedItem: RepostItem?
-    @Published var showConfirmRemoved = false
+    @Published var pendingRemoval: RepostItem?
     @Published var notice: String?
 
     private let storageKey = "repostgrid.items.v2"
@@ -50,10 +50,19 @@ final class RepostStore: ObservableObject {
         }
     }
 
-    func confirmRemoved(_ item: RepostItem) {
-        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        items[index].status = .removed
-        persist()
+    func requestRemoval(_ item: RepostItem) {
+        selectedItem = item
+        pendingRemoval = item
+        showTikTok = true
+    }
+
+    func confirmRemoved(_ item: RepostItem, verified: Bool, message: String) {
+        if verified, let index = items.firstIndex(where: { $0.videoURL == item.videoURL }) {
+            items[index].status = .removed
+            persist()
+        }
+        pendingRemoval = nil
+        notice = message
     }
 
     func clearItems() {
@@ -97,9 +106,8 @@ struct ContentView: View {
                         ForEach(store.items) { item in
                             RepostCard(item: item) {
                                 store.openTikTok(for: item)
-                            } markRemoved: {
-                                store.selectedItem = item
-                                store.showConfirmRemoved = true
+                            } removeRepost: {
+                                store.requestRemoval(item)
                             }
                         }
                     }
@@ -108,7 +116,7 @@ struct ContentView: View {
                         EmptyStateView()
                     }
 
-                    Text("Сканирование запрашивает список репостов через внутренний endpoint TikTok в авторизованной веб-сессии. Endpoint неофициальный и может перестать работать; снятие репоста пока выполняется вручную.")
+                    Text("Список и снятие репостов запрашиваются через веб-сессию TikTok внутри приложения. Используются неофициальные endpoints: TikTok может изменить их или заблокировать запросы. Счётчик меняется только после проверки, что репост исчез из списка.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
@@ -118,23 +126,12 @@ struct ContentView: View {
             .background(Color(red: 0.055, green: 0.06, blue: 0.08))
             .navigationBarHidden(true)
             .sheet(isPresented: $store.showTikTok) {
-                TikTokWebSheet { scanned in
+                TikTokWebSheet(deleteTarget: store.pendingRemoval, onScan: { scanned in
                     store.replaceWithScannedItems(scanned)
-                }
-            }
-            .confirmationDialog(
-                "Подтвердить результат",
-                isPresented: $store.showConfirmRemoved,
-                titleVisibility: .visible
-            ) {
-                Button("Я снял(а) репост — отметить удалённым") {
-                    if let item = store.selectedItem {
-                        store.confirmRemoved(item)
-                    }
-                }
-                Button("Отмена", role: .cancel) {}
-            } message: {
-                Text("Сначала снимите репост в TikTok. Счётчик изменится только после вашего подтверждения.")
+                }, onRemove: { item, verified, message in
+                    store.confirmRemoved(item, verified: verified, message: message)
+                    if verified { store.showTikTok = false }
+                })
             }
             .alert("Repost Grid", isPresented: Binding(
                 get: { store.notice != nil },
@@ -239,7 +236,7 @@ struct EmptyStateView: View {
 struct RepostCard: View {
     let item: RepostItem
     let open: () -> Void
-    let markRemoved: () -> Void
+    let removeRepost: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -282,8 +279,8 @@ struct RepostCard: View {
             .buttonStyle(.bordered)
 
             if item.status == .pending {
-                Button(action: markRemoved) {
-                    Label("Отметить удалённым", systemImage: "checkmark")
+                Button(action: removeRepost) {
+                    Label("Снять репост", systemImage: "arrow.uturn.backward")
                         .font(.caption.weight(.semibold))
                         .frame(maxWidth: .infinity)
                 }
@@ -306,8 +303,11 @@ struct TikTokWebSheet: View {
     @State private var scanTrigger = 0
     @State private var loginTrigger = 0
     @State private var profileTrigger = 0
-    @State private var pageMessage = "Войдите в TikTok и откройте свой профиль. Сканирование запрашивает список репостов напрямую, без видимой вкладки репостов."
+    @State private var removeTrigger = 0
+    @State private var pageMessage = "Войдите в TikTok один раз. Затем список и снятие репостов выполняются запросами внутри этой сессии."
+    let deleteTarget: RepostItem?
     let onScan: ([RepostItem]) -> Void
+    let onRemove: (RepostItem, Bool, String) -> Void
 
     var body: some View {
         NavigationStack {
@@ -317,14 +317,22 @@ struct TikTokWebSheet: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                TikTokWebView(scanTrigger: $scanTrigger, loginTrigger: $loginTrigger, profileTrigger: $profileTrigger) { scanned, message in
+                TikTokWebView(scanTrigger: $scanTrigger, loginTrigger: $loginTrigger, profileTrigger: $profileTrigger, removeTrigger: $removeTrigger, removeTargetURL: deleteTarget?.videoURL ?? "") { scanned, message in
                     pageMessage = message
                     if !scanned.isEmpty {
                         onScan(scanned)
                     }
+                } onRemove: { verified, message in
+                    pageMessage = message
+                    if let deleteTarget {
+                        onRemove(deleteTarget, verified, message)
+                    }
                 }
             }
             .ignoresSafeArea(edges: .bottom)
+            .onAppear {
+                if deleteTarget != nil { removeTrigger += 1 }
+            }
             .navigationTitle("TikTok")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -345,7 +353,7 @@ struct TikTokWebSheet: View {
                     Button {
                         scanTrigger += 1
                     } label: {
-                        Label("Сканировать", systemImage: "viewfinder")
+                        Label("Найти репосты", systemImage: "viewfinder")
                     }
                 }
             }
@@ -357,10 +365,13 @@ struct TikTokWebView: UIViewRepresentable {
     @Binding var scanTrigger: Int
     @Binding var loginTrigger: Int
     @Binding var profileTrigger: Int
+    @Binding var removeTrigger: Int
+    let removeTargetURL: String
     let onScan: ([RepostItem], String) -> Void
+    let onRemove: (Bool, String) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onScan: onScan)
+        Coordinator(onScan: onScan, onRemove: onRemove)
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -402,6 +413,11 @@ struct TikTokWebView: UIViewRepresentable {
             }
             return
         }
+        if removeTrigger != context.coordinator.lastRemoveTrigger {
+            context.coordinator.lastRemoveTrigger = removeTrigger
+            context.coordinator.queueRemoval(removeTargetURL, in: uiView)
+            return
+        }
         guard scanTrigger != context.coordinator.lastScanTrigger else { return }
         context.coordinator.lastScanTrigger = scanTrigger
 
@@ -409,12 +425,12 @@ struct TikTokWebView: UIViewRepresentable {
         (async () => {
           const fail = message => ({ ok: false, message, rows: [] });
           try {
-            const path = window.location.pathname || '';
-            const universal = window.__$UNIVERSAL_DATA$__;
+            const universal = window.__$UNIVERSAL_DATA$__ || window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
             const scope = universal && universal.__DEFAULT_SCOPE__;
-            const secUid = scope && scope['webapp.app-context'] && scope['webapp.app-context'].user && scope['webapp.app-context'].user.secUid;
-            if (!path.startsWith('/@') || !secUid) {
-              return fail('Сначала войдите в TikTok и откройте свой профиль. Не нужно открывать вкладку «Репосты»: список запрашивается напрямую у TikTok.');
+            const user = scope && scope['webapp.app-context'] && scope['webapp.app-context'].user;
+            const secUid = user && (user.secUid || user.sec_uid || user.secUserId);
+            if (!secUid) {
+              return fail('Не удалось определить авторизованный аккаунт TikTok. Войдите через официальную страницу tiktok.com внутри Repost Grid и повторите попытку.');
             }
             const rows = [];
             const seen = new Set();
@@ -508,10 +524,103 @@ struct TikTokWebView: UIViewRepresentable {
         var lastScanTrigger = 0
         var lastLoginTrigger = 0
         var lastProfileTrigger = 0
+        var lastRemoveTrigger = 0
+        private var pendingRemovalURL: String?
+        private var pageReady = false
         let onScan: ([RepostItem], String) -> Void
+        let onRemove: (Bool, String) -> Void
 
-        init(onScan: @escaping ([RepostItem], String) -> Void) {
+        init(onScan: @escaping ([RepostItem], String) -> Void, onRemove: @escaping (Bool, String) -> Void) {
             self.onScan = onScan
+            self.onRemove = onRemove
+        }
+
+        func queueRemoval(_ url: String, in webView: WKWebView) {
+            guard !url.isEmpty else {
+                onRemove(false, "Не удалось определить ID видео для снятия репоста.")
+                return
+            }
+            pendingRemovalURL = url
+            if pageReady && !webView.isLoading {
+                performPendingRemoval(in: webView)
+            } else {
+                onScan([], "Подключаюсь к TikTok и проверяю авторизацию перед снятием репоста…")
+            }
+        }
+
+        private func performPendingRemoval(in webView: WKWebView) {
+            guard let targetURL = pendingRemovalURL else { return }
+            pendingRemovalURL = nil
+            let script = """
+            (async () => {
+              const fail = message => ({ ok: false, message });
+              try {
+                const target = new URL(\(String(reflecting: targetURL)));
+                const match = target.pathname.match(/\\/video\\/(\\d+)/);
+                if (!match) return fail('Не удалось извлечь ID видео из ссылки.');
+                const itemID = match[1];
+                const universal = window.__$UNIVERSAL_DATA$__ || window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
+                const scope = universal && universal.__DEFAULT_SCOPE__;
+                const user = scope && scope['webapp.app-context'] && scope['webapp.app-context'].user;
+                const secUid = user && (user.secUid || user.sec_uid || user.secUserId);
+                const response = await fetch('/tiktok/v1/upvote/delete?aid=1988&item_id=' + encodeURIComponent(itemID), {
+                  method: 'POST',
+                  credentials: 'include',
+                  headers: {
+                    'accept': 'application/json, text/plain, */*',
+                    'content-type': 'application/x-www-form-urlencoded',
+                    'x-secsdk-csrf-request': '1'
+                  },
+                  body: ''
+                });
+                const raw = await response.text();
+                if (!response.ok) return fail('TikTok отклонил снятие репоста: HTTP ' + response.status + '.');
+                let result;
+                try { result = JSON.parse(raw); } catch (_) { return fail('TikTok не вернул проверяемый JSON-ответ. Репост не отмечен удалённым.'); }
+                if (result.status_code !== 0 && result.statusCode !== 0 && result.message !== 'success') {
+                  return fail('TikTok не подтвердил снятие репоста: ' + (result.status_msg || result.message || 'неизвестный ответ'));
+                }
+                if (!secUid) return fail('TikTok ответил на запрос, но приложение не смогло проверить список репостов. Статус не изменён.');
+                let cursor = '0', hasMore = true, pages = 0, stillPresent = false;
+                while (hasMore && pages < 20) {
+                  const params = new URLSearchParams({ aid:'1988', count:'30', coverFormat:'2', cursor, needPinnedItemIds:'true', post_item_list_request_type:'0', secUid });
+                  const check = await fetch('/api/repost/item_list/?' + params.toString(), { credentials:'include', headers:{'accept':'application/json, text/plain, */*'} });
+                  if (!check.ok) return fail('Запрос на снятие отправлен, но проверка списка завершилась HTTP ' + check.status + '. Статус не изменён.');
+                  const page = await check.json();
+                  if (page.status_code !== undefined && page.status_code !== 0) return fail('Запрос отправлен, но TikTok не дал проверить список репостов. Статус не изменён.');
+                  const list = Array.isArray(page.itemList) ? page.itemList : [];
+                  if (list.some(item => String(item && item.id || '') === itemID)) { stillPresent = true; break; }
+                  pages++;
+                  const next = page.cursor == null ? cursor : String(page.cursor);
+                  hasMore = Boolean(page.hasMore) && next !== cursor;
+                  cursor = next;
+                }
+                if (stillPresent) return fail('TikTok пока всё ещё возвращает этот репост. Он не отмечен удалённым.');
+                if (hasMore) return fail('Не удалось проверить весь список репостов за один проход. Статус не изменён.');
+                return { ok:true, message:'Репост снят и проверен: видео больше нет в списке репостов TikTok.' };
+              } catch (error) {
+                return fail('Ошибка запроса TikTok: ' + String(error && error.message || error));
+              }
+            })()
+            """;
+            webView.evaluateJavaScript(script) { result, error in
+                DispatchQueue.main.async {
+                    if let error {
+                        self.onRemove(false, "Не удалось проверить результат: \\(error.localizedDescription)")
+                        return
+                    }
+                    let payload = result as? [String: Any] ?? [:]
+                    self.onRemove((payload["ok"] as? Bool) == true,
+                                  payload["message"] as? String ?? "TikTok не вернул подтверждение.")
+                }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            pageReady = true
+            if pendingRemovalURL != nil {
+                performPendingRemoval(in: webView)
+            }
         }
 
         func webView(
