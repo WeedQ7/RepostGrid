@@ -26,8 +26,7 @@ final class RepostStore: ObservableObject {
 
     init() {
         if let data = UserDefaults.standard.data(forKey: storageKey),
-           let saved = try? JSONDecoder().decode([RepostItem].self, from: data),
-        {
+           let saved = try? JSONDecoder().decode([RepostItem].self, from: data) {
             items = saved
         }
     }
@@ -119,7 +118,9 @@ struct ContentView: View {
             .background(Color(red: 0.055, green: 0.06, blue: 0.08))
             .navigationBarHidden(true)
             .sheet(isPresented: $store.showTikTok) {
-                TikTokWebSheet()
+                TikTokWebSheet { scanned in
+                    store.replaceWithScannedItems(scanned)
+                }
             }
             .confirmationDialog(
                 "Подтвердить результат",
@@ -301,7 +302,7 @@ struct RepostCard: View {
 }
 
 struct TikTokWebSheet: View {
-    @Environment(\\.dismiss) private var dismiss
+    @Environment(\.dismiss) private var dismiss
     @State private var scanTrigger = 0
     @State private var pageMessage = "Войдите в TikTok, откройте свой профиль и вкладку репостов, затем нажмите «Сканировать»."
     let onScan: ([RepostItem]) -> Void
