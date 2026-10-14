@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    runs-on: macos-15
 
     steps:
       - name: Checkout source
@@ -18,7 +18,12 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          echo "--- Список файлов в корне ---"
+          ls -la
+          echo "--- Поиск файлов .xcodeproj ---"
+          find . -name "*.xcodeproj"
 
       - name: Build unsigned iOS app
         run: |
