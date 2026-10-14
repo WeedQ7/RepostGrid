@@ -405,9 +405,9 @@ struct TikTokWebView: UIViewRepresentable {
             """) { result, error in
                 DispatchQueue.main.async {
                     if error != nil || (result as? String) == "profile-not-found" {
-                        self.onScan([], "Не удалось автоматически открыть профиль. Войдите в TikTok и нажмите на значок профиля вручную, затем откройте вкладку «Репосты».")
+                        self.onScan([], "Не удалось открыть профиль автоматически. Для поиска не требуется открывать вкладку «Репосты» — попробуйте нажать «Найти репосты».")
                     } else {
-                        self.onScan([], "Открыл профиль. Теперь вручную выберите вкладку «Репосты» и нажмите «Сканировать».")
+                        self.onScan([], "Профиль открыт. Нажмите «Найти репосты» — приложение запросит список напрямую.")
                     }
                 }
             }
@@ -428,7 +428,14 @@ struct TikTokWebView: UIViewRepresentable {
             const universal = window.__$UNIVERSAL_DATA$__ || window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
             const scope = universal && universal.__DEFAULT_SCOPE__;
             const user = scope && scope['webapp.app-context'] && scope['webapp.app-context'].user;
-            const secUid = user && (user.secUid || user.sec_uid || user.secUserId);
+            let secUid = user && (user.secUid || user.sec_uid || user.secUserId);
+            if (!secUid) {
+              try {
+                const authResponse = await fetch('/passport/web/account/info/?aid=1988&app_language=en&app_name=tiktok_web', { credentials: 'include' });
+                const authPayload = await authResponse.json();
+                secUid = authPayload && authPayload.data && (authPayload.data.sec_user_id || authPayload.data.sec_user_id_str);
+              } catch (_) {}
+            }
             if (!secUid) {
               return fail('Не удалось определить авторизованный аккаунт TikTok. Войдите через официальную страницу tiktok.com внутри Repost Grid и повторите попытку.');
             }
@@ -513,7 +520,7 @@ struct TikTokWebView: UIViewRepresentable {
                     )
                 }
                 let message = items.isEmpty
-                    ? "На вкладке репостов не найдены ссылки на видео. Прокрутите страницу, чтобы загрузить карточки, и нажмите «Сканировать» ещё раз."
+                    ? "TikTok вернул пустой список репостов. Проверьте вход и повторите поиск."
                     : "Сканирование вкладки репостов завершено: найдено видео — \\(items.count)."
                 self.onScan(items, message)
             }
@@ -562,7 +569,7 @@ struct TikTokWebView: UIViewRepresentable {
                 const universal = window.__$UNIVERSAL_DATA$__ || window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
                 const scope = universal && universal.__DEFAULT_SCOPE__;
                 const user = scope && scope['webapp.app-context'] && scope['webapp.app-context'].user;
-                const secUid = user && (user.secUid || user.sec_uid || user.secUserId);
+                let secUid = user && (user.secUid || user.sec_uid || user.secUserId);
                 const response = await fetch('/tiktok/v1/upvote/delete?aid=1988&item_id=' + encodeURIComponent(itemID), {
                   method: 'POST',
                   credentials: 'include',
@@ -579,6 +586,13 @@ struct TikTokWebView: UIViewRepresentable {
                 try { result = JSON.parse(raw); } catch (_) { return fail('TikTok не вернул проверяемый JSON-ответ. Репост не отмечен удалённым.'); }
                 if (result.status_code !== 0 && result.statusCode !== 0 && result.message !== 'success') {
                   return fail('TikTok не подтвердил снятие репоста: ' + (result.status_msg || result.message || 'неизвестный ответ'));
+                }
+                if (!secUid) {
+                  try {
+                    const authResponse = await fetch('/passport/web/account/info/?aid=1988&app_language=en&app_name=tiktok_web', { credentials: 'include' });
+                    const authPayload = await authResponse.json();
+                    secUid = authPayload && authPayload.data && (authPayload.data.sec_user_id || authPayload.data.sec_user_id_str);
+                  } catch (_) {}
                 }
                 if (!secUid) return fail('TikTok ответил на запрос, но приложение не смогло проверить список репостов. Статус не изменён.');
                 let cursor = '0', hasMore = true, pages = 0, stillPresent = false;
