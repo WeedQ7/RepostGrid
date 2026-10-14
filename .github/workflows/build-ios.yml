@@ -1,0 +1,51 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      
+main
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      
+name: Checkout source
+      uses: actions/checkout@v4
+
+      
+name: Install XcodeGen
+      run: brew install xcodegen
+
+      
+name: Generate Xcode project
+      run: xcodegen generate
+
+      
+name: Build unsigned iOS app
+      run: |
+        xcodebuild \-project RepostGrid.xcodeproj \-scheme RepostGrid \-configuration Release \-sdk iphoneos \-destination 'generic/platform=iOS' \-derivedDataPath build/DerivedData \
+          CODE_SIGNING_ALLOWED=NO \
+          build
+
+      
+name: Package IPA
+      run: |
+        set -euo pipefail
+        APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/RepostGrid.app"
+        test -d "$APP_PATH"
+        mkdir -p build/ipa/Payload
+        cp -R "$APP_PATH" build/ipa/Payload/RepostGrid.app
+        cd build/ipa/usr/bin/zip -qry RepostGrid-unsigned.ipa Payload
+
+      
+name: Upload IPA artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: RepostGrid-unsigned-IPA
+        path: build/ipa/RepostGrid-unsigned.ipa
+        if-no-files-found: error
+        retention-days: 7
